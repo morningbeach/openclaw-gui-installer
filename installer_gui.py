@@ -210,6 +210,27 @@ class InstallerApp(tk.Tk):
 
     # ═══ Helpers ══════════════════════════════════════════════════════════
 
+    def _bind_paste(self, entry):
+        """Bind Cmd+V paste on macOS for tk.Entry widgets."""
+        def _paste(e):
+            try:
+                txt = self.clipboard_get()
+                if entry.select_present():
+                    entry.delete("sel.first", "sel.last")
+                entry.insert("insert", txt)
+            except tk.TclError:
+                pass
+            return "break"
+        entry.bind("<Command-v>", _paste)
+        entry.bind("<Command-V>", _paste)
+        # Also bind Cmd+A select-all
+        def _select_all(e):
+            entry.select_range(0, "end")
+            entry.icursor("end")
+            return "break"
+        entry.bind("<Command-a>", _select_all)
+        entry.bind("<Command-A>", _select_all)
+
     def _make_page(self):
         f = tk.Frame(self.container, bg=C_BG)
         self.pages.append(f)
@@ -716,6 +737,10 @@ class InstallerApp(tk.Tk):
 
     def _build_p5_telegram(self):
         p = self._make_page()
+
+        # Pack nav FIRST (bottom) so it's always visible
+        self._nav(p, next_text="下一步 →", next_cmd=self._save_telegram)
+
         tk.Label(p, text="💬 連結 Telegram", font=self.f_title, bg=C_BG, fg=C_TEXT).pack(pady=(25,10))
 
         # Scrollable content
@@ -765,8 +790,7 @@ class InstallerApp(tk.Tk):
                 self.tg_entry = tk.Entry(tf, textvariable=self.telegram_token_var, font=self.f_mono,
                                           bg=C_BG2, fg=C_TEXT, insertbackground=C_TEXT, bd=0, width=45)
                 self.tg_entry.pack(side="left", padx=(5,0), ipady=5)
-
-        self._nav(p, next_text="下一步 →", next_cmd=self._save_telegram)
+                self._bind_paste(self.tg_entry)
 
     def _save_telegram(self):
         token = self.telegram_token_var.get().strip()
@@ -852,6 +876,7 @@ class InstallerApp(tk.Tk):
         self.api_entry = tk.Entry(kf, textvariable=self.api_key_var, font=self.f_mono, show="•",
                                    bg=C_BG2, fg=C_TEXT, insertbackground=C_TEXT, bd=0, width=45)
         self.api_entry.pack(side="left", ipady=6)
+        self._bind_paste(self.api_entry)
         tk.Button(kf, text="取得 Key", font=self.f_small, bg=C_ACCENT, fg=C_BTN_FG, bd=0,
                   padx=12, pady=4, cursor="hand2", command=self._open_api_url).pack(side="left", padx=(10,0))
 
