@@ -531,8 +531,10 @@ class InstallerApp(tk.Tk):
         try:
             env = os.environ.copy()
             env["PATH"] = "/usr/local/bin:/opt/homebrew/bin:" + env.get("PATH","")
+            env["PYTHONIOENCODING"] = "utf-8"
+            env["LANG"] = "en_US.UTF-8"
             self.install_process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                                     text=True, bufsize=1, env=env)
+                                                     env=env, encoding="utf-8", errors="replace", bufsize=1)
             for line in self.install_process.stdout:
                 if self.install_cancelled: return False
                 self._log_write(line)
@@ -547,6 +549,24 @@ class InstallerApp(tk.Tk):
         ch = self.install_channel.get()
         tag = f"@{ch}" if ch != "latest" else "@latest"
         self._log_write(f"🦞 OpenClaw Installer\n   Channel: {ch}\n")
+
+        # Clean stale npm modules to prevent ENOTEMPTY error
+        stale_dir = "/opt/homebrew/lib/node_modules/openclaw"
+        if os.path.isdir(stale_dir):
+            self._log_write("🧹 清理舊模組目錄...\n")
+            try:
+                shutil.rmtree(stale_dir, ignore_errors=True)
+            except Exception:
+                pass
+        # Also clean leftover .openclaw-* temp dirs
+        nm_dir = "/opt/homebrew/lib/node_modules"
+        if os.path.isdir(nm_dir):
+            for d in os.listdir(nm_dir):
+                if d.startswith(".openclaw-"):
+                    try:
+                        shutil.rmtree(os.path.join(nm_dir, d), ignore_errors=True)
+                    except Exception:
+                        pass
 
         ok = self._run_cmd(f"npm install -g openclaw{tag}", f"安裝 OpenClaw ({ch})")
         if not ok and not self.install_cancelled:
@@ -816,56 +836,17 @@ class InstallerApp(tk.Tk):
         # Pack nav FIRST (bottom) so it's always visible
         self._nav(p, next_text="下一步 →", next_cmd=self._save_model)
 
-        tk.Label(p, text="🧠 選擇 AI 大模型", font=self.f_title, bg=C_BG, fg=C_TEXT).pack(pady=(25,10))
-        tk.Label(p, text="選擇一個大語言模型作為 🦞 的大腦", font=self.f_sub, bg=C_BG, fg=C_DIM).pack(pady=(0,5))
-
-        # Status label for fetch progress
-        self.model_status_label = tk.Label(p, text="", font=self.f_small, bg=C_BG, fg=C_DIM)
-        self.model_status_label.pack(pady=(0,10))
-
-        # Scrollable model list container (populated dynamically)
-        self.models_frame = tk.Frame(p, bg=C_BG)
-        self.models_frame.pack(padx=30, fill="both", expand=True)
-
-        # Populate with fallback models initially
-        self._populate_model_list(self.models)
-
-        # ─── Auth section ───
+        # ─── Auth section (pack bottom, above nav) ───
         auth_section = tk.Frame(p, bg=C_BG)
-        auth_section.pack(padx=30, fill="x", pady=(12,0))
-
-        # OAuth login for OpenAI
-        oauth_frame = tk.Frame(auth_section, bg=C_INPUT, padx=15, pady=12)
-        oauth_frame.pack(fill="x")
-
-        tk.Label(oauth_frame, text="🔐 方式一：OAuth 登入（僅 OpenAI）",
-                 font=self.f_body, bg=C_INPUT, fg=C_TEXT).pack(anchor="w")
-        tk.Label(oauth_frame, text="使用 Google / Apple / Microsoft 帳號登入 OpenAI，自動取得 Token",
-                 font=self.f_small, bg=C_INPUT, fg=C_DIM).pack(anchor="w", pady=(2,8))
-
-        oauth_btn_row = tk.Frame(oauth_frame, bg=C_INPUT)
-        oauth_btn_row.pack(fill="x")
-        self.oauth_btn = tk.Button(oauth_btn_row, text="🚀 使用 OpenAI 帳號登入", font=self.f_body,
-                                    bg="#10a37f", fg="#ffffff", bd=0, padx=20, pady=8,
-                                    cursor="hand2", command=self._oauth_login_openai)
-        self.oauth_btn.pack(side="left")
-        self.oauth_status = tk.Label(oauth_btn_row, text="", font=self.f_small, bg=C_INPUT, fg=C_DIM)
-        self.oauth_status.pack(side="left", padx=(12,0))
-
-        # Divider
-        div_frame = tk.Frame(auth_section, bg=C_BG)
-        div_frame.pack(fill="x", pady=(10,10))
-        tk.Frame(div_frame, bg=C_DIM, height=1).pack(side="left", fill="x", expand=True)
-        tk.Label(div_frame, text=" 或 ", font=self.f_small, bg=C_BG, fg=C_DIM).pack(side="left", padx=8)
-        tk.Frame(div_frame, bg=C_DIM, height=1).pack(side="left", fill="x", expand=True)
+        auth_section.pack(side="bottom", padx=30, fill="x", pady=(8,0))
 
         # Manual API Key input
-        key_frame = tk.Frame(auth_section, bg=C_INPUT, padx=15, pady=12)
+        key_frame = tk.Frame(auth_section, bg=C_INPUT, padx=15, pady=10)
         key_frame.pack(fill="x")
-        tk.Label(key_frame, text="🔑 方式二：手動輸入 API Key", font=self.f_body, bg=C_INPUT, fg=C_TEXT).pack(anchor="w")
+        tk.Label(key_frame, text="🔑 方式一：手動輸入 API Key", font=self.f_body, bg=C_INPUT, fg=C_TEXT).pack(anchor="w")
 
         kf = tk.Frame(key_frame, bg=C_INPUT)
-        kf.pack(fill="x", pady=(8,0))
+        kf.pack(fill="x", pady=(6,0))
         self.api_entry = tk.Entry(kf, textvariable=self.api_key_var, font=self.f_mono, show="•",
                                    bg=C_BG2, fg=C_TEXT, insertbackground=C_TEXT, bd=0, width=45)
         self.api_entry.pack(side="left", ipady=6)
@@ -874,7 +855,45 @@ class InstallerApp(tk.Tk):
                   padx=12, pady=4, cursor="hand2", command=self._open_api_url).pack(side="left", padx=(10,0))
 
         tk.Label(key_frame, text="💡 API Key 會安全儲存在 ~/.openclaw/ 本機目錄中",
-                 font=self.f_small, bg=C_INPUT, fg=C_DIM).pack(anchor="w", pady=(6,0))
+                 font=self.f_small, bg=C_INPUT, fg=C_DIM).pack(anchor="w", pady=(4,0))
+
+        # Divider
+        div_frame = tk.Frame(auth_section, bg=C_BG)
+        div_frame.pack(fill="x", pady=(6,6))
+        tk.Frame(div_frame, bg=C_DIM, height=1).pack(side="left", fill="x", expand=True)
+        tk.Label(div_frame, text=" 或 ", font=self.f_small, bg=C_BG, fg=C_DIM).pack(side="left", padx=8)
+        tk.Frame(div_frame, bg=C_DIM, height=1).pack(side="left", fill="x", expand=True)
+
+        # OAuth login for OpenAI
+        oauth_frame = tk.Frame(auth_section, bg=C_INPUT, padx=15, pady=10)
+        oauth_frame.pack(fill="x")
+
+        tk.Label(oauth_frame, text="🔐 方式二：OAuth 登入（僅 OpenAI）",
+                 font=self.f_body, bg=C_INPUT, fg=C_TEXT).pack(anchor="w")
+
+        oauth_btn_row = tk.Frame(oauth_frame, bg=C_INPUT)
+        oauth_btn_row.pack(fill="x", pady=(4,0))
+        self.oauth_btn = tk.Button(oauth_btn_row, text="🚀 使用 OpenAI 帳號登入", font=self.f_body,
+                                    bg="#10a37f", fg="#ffffff", bd=0, padx=20, pady=6,
+                                    cursor="hand2", command=self._oauth_login_openai)
+        self.oauth_btn.pack(side="left")
+        self.oauth_status = tk.Label(oauth_btn_row, text="", font=self.f_small, bg=C_INPUT, fg=C_DIM)
+        self.oauth_status.pack(side="left", padx=(12,0))
+
+        # ─── Top: Title ───
+        tk.Label(p, text="🧠 選擇 AI 大模型", font=self.f_title, bg=C_BG, fg=C_TEXT).pack(pady=(18,6))
+        tk.Label(p, text="選擇一個大語言模型作為 🦞 的大腦", font=self.f_sub, bg=C_BG, fg=C_DIM).pack(pady=(0,3))
+
+        # Status label for fetch progress
+        self.model_status_label = tk.Label(p, text="", font=self.f_small, bg=C_BG, fg=C_DIM)
+        self.model_status_label.pack(pady=(0,6))
+
+        # ─── Middle: Scrollable model list (fills remaining space) ───
+        self.models_frame = tk.Frame(p, bg=C_BG)
+        self.models_frame.pack(padx=30, fill="both", expand=True)
+
+        # Populate with fallback models initially
+        self._populate_model_list(self.models)
 
     def _populate_model_list(self, models):
         """Clear and rebuild the model radio-button list."""
