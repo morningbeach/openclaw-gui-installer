@@ -741,56 +741,49 @@ class InstallerApp(tk.Tk):
         # Pack nav FIRST (bottom) so it's always visible
         self._nav(p, next_text="下一步 →", next_cmd=self._save_telegram)
 
-        tk.Label(p, text="💬 連結 Telegram", font=self.f_title, bg=C_BG, fg=C_TEXT).pack(pady=(25,10))
+        tk.Label(p, text="💬 連結 Telegram", font=self.f_title, bg=C_BG, fg=C_TEXT).pack(pady=(20,8))
 
-        # Scrollable content
-        canvas = tk.Canvas(p, bg=C_BG, highlightthickness=0)
-        scroll = tk.Scrollbar(p, orient="vertical", command=canvas.yview)
-        inner = tk.Frame(canvas, bg=C_BG)
-        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0,0), window=inner, anchor="nw", width=WINDOW_WIDTH-40)
-        canvas.configure(yscrollcommand=scroll.set)
-        canvas.pack(side="left", fill="both", expand=True, padx=20)
-        scroll.pack(side="right", fill="y")
+        # Content area (no canvas/scrollbar — fits in window)
+        inner = tk.Frame(p, bg=C_BG)
+        inner.pack(padx=30, fill="both", expand=True)
 
-        # Steps
-        steps = [
-            ("Step 1：建立 Telegram Bot",
-             "① 在 Telegram 搜尋 @BotFather 並開啟對話\n"
-             "② 發送 /newbot\n"
-             "③ 輸入機器人名稱，例如：My OpenClaw\n"
-             "④ 輸入機器人帳號（需以 bot 結尾），例如：my_openclaw_bot\n"
-             "⑤ BotFather 會回覆一組 Bot Token，格式像：\n"
-             "   123456789:ABCdefGHIjklMNOpqrsTUVwxyz"),
+        # Step 1
+        s1 = tk.Frame(inner, bg=C_INPUT, padx=15, pady=10)
+        s1.pack(fill="x", pady=5)
+        tk.Label(s1, text="Step 1：建立 Telegram Bot", font=self.f_sub, bg=C_INPUT, fg=C_ACCENT).pack(anchor="w")
+        tk.Label(s1, text="① 在 Telegram 搜尋 @BotFather 並開啟對話\n"
+                 "② 發送 /newbot\n"
+                 "③ 輸入機器人名稱，例如：My OpenClaw\n"
+                 "④ 輸入機器人帳號（需以 bot 結尾），例如：my_openclaw_bot\n"
+                 "⑤ BotFather 會回覆一組 Bot Token，格式像：\n"
+                 "   123456789:ABCdefGHIjklMNOpqrsTUVwxyz",
+                 font=self.f_small, bg=C_INPUT, fg=C_TEXT, justify="left", wraplength=600).pack(anchor="w", pady=(4,0))
+        tk.Button(s1, text="📱 開啟 BotFather", font=self.f_small, bg=C_BTN, fg=C_BTN_FG,
+                  bd=0, padx=12, pady=4, cursor="hand2",
+                  command=lambda: webbrowser.open("https://t.me/BotFather")).pack(anchor="w", pady=(6,0))
 
-            ("Step 2：貼上 Bot Token",
-             "把 BotFather 給你的 Token 貼到下方："),
+        # Step 2
+        s2 = tk.Frame(inner, bg=C_INPUT, padx=15, pady=10)
+        s2.pack(fill="x", pady=5)
+        tk.Label(s2, text="Step 2：貼上 Bot Token", font=self.f_sub, bg=C_INPUT, fg=C_ACCENT).pack(anchor="w")
+        tk.Label(s2, text="把 BotFather 給你的 Token 貼到下方：",
+                 font=self.f_small, bg=C_INPUT, fg=C_TEXT).pack(anchor="w", pady=(4,0))
+        tf = tk.Frame(s2, bg=C_INPUT)
+        tf.pack(fill="x", pady=(6,0))
+        tk.Label(tf, text="Bot Token：", font=self.f_body, bg=C_INPUT, fg=C_DIM).pack(side="left")
+        self.tg_entry = tk.Entry(tf, textvariable=self.telegram_token_var, font=self.f_mono,
+                                  bg=C_BG2, fg=C_TEXT, insertbackground=C_TEXT, bd=0, width=45)
+        self.tg_entry.pack(side="left", padx=(5,0), ipady=5)
+        self._bind_paste(self.tg_entry)
 
-            ("Step 3：設定完成後",
-             "• 在 Telegram 搜尋你剛建立的 bot 帳號\n"
-             "• 點「Start」開始對話\n"
-             "• OpenClaw 會自動回覆你！"),
-        ]
-
-        for i, (title, desc) in enumerate(steps):
-            sf = tk.Frame(inner, bg=C_INPUT, padx=15, pady=12)
-            sf.pack(fill="x", pady=8, padx=10)
-            tk.Label(sf, text=title, font=self.f_sub, bg=C_INPUT, fg=C_ACCENT).pack(anchor="w")
-            tk.Label(sf, text=desc, font=self.f_body, bg=C_INPUT, fg=C_TEXT, justify="left", wraplength=600).pack(anchor="w", pady=(5,0))
-
-            if i == 0:
-                tk.Button(sf, text="📱 開啟 BotFather", font=self.f_body, bg=C_BTN, fg=C_BTN_FG,
-                          bd=0, padx=15, pady=6, cursor="hand2",
-                          command=lambda: webbrowser.open("https://t.me/BotFather")).pack(anchor="w", pady=(8,0))
-
-            if i == 1:
-                tf = tk.Frame(sf, bg=C_INPUT)
-                tf.pack(fill="x", pady=(8,0))
-                tk.Label(tf, text="Bot Token：", font=self.f_body, bg=C_INPUT, fg=C_DIM).pack(side="left")
-                self.tg_entry = tk.Entry(tf, textvariable=self.telegram_token_var, font=self.f_mono,
-                                          bg=C_BG2, fg=C_TEXT, insertbackground=C_TEXT, bd=0, width=45)
-                self.tg_entry.pack(side="left", padx=(5,0), ipady=5)
-                self._bind_paste(self.tg_entry)
+        # Step 3
+        s3 = tk.Frame(inner, bg=C_INPUT, padx=15, pady=10)
+        s3.pack(fill="x", pady=5)
+        tk.Label(s3, text="Step 3：設定完成後", font=self.f_sub, bg=C_INPUT, fg=C_ACCENT).pack(anchor="w")
+        tk.Label(s3, text="• 在 Telegram 搜尋你剛建立的 bot 帳號\n"
+                 "• 點「Start」開始對話\n"
+                 "• OpenClaw 會自動回覆你！",
+                 font=self.f_small, bg=C_INPUT, fg=C_TEXT, justify="left").pack(anchor="w", pady=(4,0))
 
     def _save_telegram(self):
         token = self.telegram_token_var.get().strip()
