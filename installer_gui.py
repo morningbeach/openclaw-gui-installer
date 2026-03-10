@@ -995,6 +995,8 @@ class InstallerApp(tk.Tk):
                 state="normal", text="🚀 使用 OpenAI 帳號登入"))
 
         threading.Thread(target=do, daemon=True).start()
+
+    def _fetch_latest_models(self):
         """Fetch latest models from OpenRouter API and update the model list."""
         self.after(0, lambda: self.model_status_label.config(
             text="🔄 正在線上取得最新模型列表…", fg=C_WARN))
@@ -1102,11 +1104,28 @@ class InstallerApp(tk.Tk):
 
     def _build_p7_chat(self):
         p = self._make_page()
+
+        # Pack nav FIRST (bottom) so it's always visible
+        self._nav(p, next_text="完成設定 →", next_cmd=self._finish_setup)
+
         tk.Label(p, text="🦞 跟龍蝦聊聊", font=self.f_title, bg=C_BG, fg=C_TEXT).pack(pady=(20,5))
         tk.Label(p, text="告訴 🦞 你想拿它來做什麼，它會推薦合適的 Skills",
                  font=self.f_sub, bg=C_BG, fg=C_DIM).pack(pady=(0,10))
 
-        # Chat display
+        # Input bar (pack BEFORE chat so it stays above nav)
+        input_frame = tk.Frame(p, bg=C_BG2, padx=10, pady=10)
+        input_frame.pack(side="bottom", fill="x", padx=20, pady=(5,0))
+
+        self.chat_input = tk.Entry(input_frame, font=self.f_chat, bg=C_INPUT, fg=C_TEXT,
+                                    insertbackground=C_TEXT, bd=0)
+        self.chat_input.pack(side="left", fill="x", expand=True, ipady=8, padx=(0,10))
+        self.chat_input.bind("<Return>", lambda e: self._send_chat())
+        self._bind_paste(self.chat_input)
+
+        tk.Button(input_frame, text="發送", font=self.f_body, bg=C_BTN, fg=C_BTN_FG,
+                  bd=0, padx=20, pady=6, cursor="hand2", command=self._send_chat).pack(side="right")
+
+        # Chat display (fills remaining space between title and input)
         chat_frame = tk.Frame(p, bg=C_BG2, padx=2, pady=2)
         chat_frame.pack(padx=20, fill="both", expand=True)
 
@@ -1122,20 +1141,6 @@ class InstallerApp(tk.Tk):
         self.chat_display.tag_configure("bot", foreground=C_ACCENT)
         self.chat_display.tag_configure("user", foreground=C_OK)
         self.chat_display.tag_configure("system", foreground=C_DIM, font=self.f_small)
-
-        # Input bar
-        input_frame = tk.Frame(p, bg=C_BG2, padx=10, pady=10)
-        input_frame.pack(fill="x", padx=20, pady=(5,0))
-
-        self.chat_input = tk.Entry(input_frame, font=self.f_chat, bg=C_INPUT, fg=C_TEXT,
-                                    insertbackground=C_TEXT, bd=0)
-        self.chat_input.pack(side="left", fill="x", expand=True, ipady=8, padx=(0,10))
-        self.chat_input.bind("<Return>", lambda e: self._send_chat())
-
-        tk.Button(input_frame, text="發送", font=self.f_body, bg=C_BTN, fg=C_BTN_FG,
-                  bd=0, padx=20, pady=6, cursor="hand2", command=self._send_chat).pack(side="right")
-
-        self._nav(p, next_text="完成設定 →", next_cmd=self._finish_setup)
 
     def _chat_append(self, role, text):
         def do():
