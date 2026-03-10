@@ -19,6 +19,31 @@ import re
 import tkinter as tk
 from tkinter import ttk, messagebox, font as tkfont, scrolledtext
 
+# ─── Fix PATH for .app bundle ────────────────────────────────────────────────
+# When launched as .app, PATH is minimal (/usr/bin:/bin).
+# Add common macOS paths so shutil.which() and subprocess can find node/npm/brew.
+_EXTRA_PATHS = [
+    "/opt/homebrew/bin",
+    "/opt/homebrew/sbin",
+    "/usr/local/bin",
+    "/usr/local/sbin",
+    os.path.expanduser("~/.nvm/versions/node/*/bin"),  # nvm
+    os.path.expanduser("~/n/bin"),                       # n
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+]
+_current = os.environ.get("PATH", "")
+_to_add = [p for p in _EXTRA_PATHS if p not in _current and "*" not in p]
+# Also resolve nvm glob
+import glob as _glob
+for _pattern in [os.path.expanduser("~/.nvm/versions/node/*/bin")]:
+    for _found in sorted(_glob.glob(_pattern), reverse=True):  # newest first
+        if _found not in _current:
+            _to_add.insert(0, _found)
+os.environ["PATH"] = ":".join(_to_add) + ":" + _current
+
 # ─── Constants ────────────────────────────────────────────────────────────────
 APP_NAME = "OpenClaw Installer"
 OPENCLAW_WEBSITE = "https://openclaw.ai/"
@@ -74,7 +99,6 @@ class InstallerApp(tk.Tk):
         self.install_channel = tk.StringVar(value="latest")
         self.install_daemon = tk.BooleanVar(value=True)
         self.run_onboard = tk.BooleanVar(value=True)
-        self.node_method = tk.StringVar(value="official")
         self.selected_model = tk.StringVar(value=MODELS[0]["id"])
         self.api_key_var = tk.StringVar()
         self.telegram_token_var = tk.StringVar()
@@ -237,14 +261,17 @@ class InstallerApp(tk.Tk):
             d.pack(side="right")
             self.chk[key] = (s, d)
 
-        # Node install frame (hidden)
+        # Node install frame (hidden, shows progress)
         self.node_box = tk.Frame(p, bg=C_INPUT, padx=20, pady=15)
-        tk.Label(self.node_box, text="⚠️ 需要安裝 Node.js 22+", font=self.f_sub, bg=C_INPUT, fg=C_WARN).pack(anchor="w")
-        ttk.Radiobutton(self.node_box, text="官方安裝包（推薦）", variable=self.node_method, value="official").pack(anchor="w",pady=3)
-        ttk.Radiobutton(self.node_box, text="Homebrew 安裝", variable=self.node_method, value="homebrew").pack(anchor="w",pady=3)
-        self.btn_node = tk.Button(self.node_box, text="安裝 Node.js", font=self.f_body, bg=C_WARN,
-                                   fg="#000", bd=0, padx=20, pady=8, cursor="hand2", command=self._install_node)
-        self.btn_node.pack(pady=(8,0))
+        self.node_status_label = tk.Label(self.node_box, text="⏳ 正在自動安裝 Node.js 22+...",
+                                           font=self.f_sub, bg=C_INPUT, fg=C_WARN)
+        self.node_status_label.pack(anchor="w")
+        self.node_detail_label = tk.Label(self.node_box, text="偵測安裝方式中...",
+                                           font=self.f_small, bg=C_INPUT, fg=C_DIM)
+        self.node_detail_label.pack(anchor="w", pady=(4,0))
+        self.node_progress = ttk.Progressbar(self.node_box, mode="indeterminate",
+                                              style="Horizontal.TProgressbar", length=500)
+        self.node_progress.pack(fill="x", pady=(8,0))
 
         self._nav(p, back=True, next_text="下一步 →", next_cmd=lambda: self._show_page(2))
 
@@ -269,18 +296,23 @@ class InstallerApp(tk.Tk):
         nok, nv = self._ck_node()
         if nok:
             self.after(0, lambda v=nv: self._sc("node","ok",f"v{v}"))
+            # npm comes with node
+            npm = shutil.which("npm")
+            if npm:
+                try:
+                    r = subprocess.run(["npm","--version"], capture_output=True, text=True, timeout=10)
+                    self.after(0, lambda v=r.stdout.strip(): self._sc("npm","ok",f"v{v}"))
+                except: self.after(0, lambda: self._sc("npm","warn","版本未知"))
+            else:
+                self.after(0, lambda: self._sc("npm","fail","未找到"))
         else:
             det = f"v{nv}（需≥22）" if nv else "未安裝"
             self.after(0, lambda d=det: self._sc("node","fail",d))
+            self.after(0, lambda: self._sc("npm","fail","需先安裝 Node.js"))
+            # Auto-install Node.js
             self.after(0, lambda: self.node_box.pack(padx=40, fill="x", pady=(10,0)))
-        npm = shutil.which("npm")
-        if npm:
-            try:
-                r = subprocess.run(["npm","--version"], capture_output=True, text=True, timeout=10)
-                self.after(0, lambda v=r.stdout.strip(): self._sc("npm","ok",f"v{v}"))
-            except: self.after(0, lambda: self._sc("npm","warn","版本未知"))
-        else:
-            self.after(0, lambda: self._sc("npm","fail","未找到"))
+            self.after(0, lambda: self.node_progress.start(15))
+            self._auto_install_node()
 
     def _ck_node(self):
         n = shutil.which("node")
@@ -291,20 +323,88 @@ class InstallerApp(tk.Tk):
             return int(v.split(".")[0]) >= REQUIRED_NODE_MAJOR, v
         except: return False, None
 
-    def _install_node(self):
-        m = self.node_method.get()
-        self.btn_node.config(state="disabled", text="安裝中...")
+    def _auto_install_node(self):
+        """Automatically install Node.js 22 via Homebrew (install Homebrew first if needed)."""
+        def _update(msg):
+            self.after(0, lambda: self.node_detail_label.config(text=msg))
+
+        def _run(cmd, **kw):
+            kw.setdefault("capture_output", True)
+            kw.setdefault("text", True)
+            kw.setdefault("timeout", 600)
+            return subprocess.run(cmd, **kw)
+
         def do():
             try:
-                if m == "homebrew":
-                    subprocess.run(["brew","install","node@22"], check=True, timeout=300)
-                else:
-                    webbrowser.open("https://nodejs.org/en/download/")
-                    self.after(0, lambda: messagebox.showinfo("Node.js","已開啟下載頁。安裝後點重新檢查。"))
-                self.after(0, lambda: [self.node_box.pack_forget(), self._do_checks()])
+                has_brew = shutil.which("brew") is not None
+                # ── Step 1: Install Homebrew if missing ──
+                if not has_brew:
+                    _update("正在安裝 Homebrew（首次需數分鐘）…")
+                    p = subprocess.Popen(
+                        ["/bin/bash", "-c",
+                         'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'],
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+                    )
+                    for line in p.stdout:
+                        short = line.strip()[-60:] if line.strip() else ""
+                        if short:
+                            _update(f"Homebrew: {short}")
+                    p.wait()
+                    if p.returncode != 0:
+                        raise RuntimeError("Homebrew 安裝失敗")
+                    # Ensure brew is on PATH
+                    for bp in ["/opt/homebrew/bin", "/usr/local/bin"]:
+                        if os.path.isfile(os.path.join(bp, "brew")):
+                            os.environ["PATH"] = bp + ":" + os.environ.get("PATH", "")
+                            break
+                    _update("✅ Homebrew 安裝完成")
+
+                # ── Step 2: Install Node.js 22 ──
+                _update("正在透過 Homebrew 安裝 Node.js 22…")
+                p2 = subprocess.Popen(
+                    ["brew", "install", "node@22"],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+                )
+                for line in p2.stdout:
+                    short = line.strip()[-60:] if line.strip() else ""
+                    if short:
+                        _update(f"Node: {short}")
+                p2.wait()
+                if p2.returncode != 0:
+                    raise RuntimeError("Node.js 安裝失敗")
+
+                # Link node@22 so it's on PATH
+                subprocess.run(["brew", "link", "--overwrite", "node@22"],
+                                capture_output=True, text=True, timeout=60)
+
+                # Refresh PATH with node location
+                node_prefix = subprocess.run(
+                    ["brew", "--prefix", "node@22"],
+                    capture_output=True, text=True, timeout=30
+                ).stdout.strip()
+                if node_prefix:
+                    bin_dir = os.path.join(node_prefix, "bin")
+                    if bin_dir not in os.environ.get("PATH", ""):
+                        os.environ["PATH"] = bin_dir + ":" + os.environ["PATH"]
+
+                _update("✅ Node.js 22 安裝完成！正在重新檢查…")
+                self.after(500, lambda: [
+                    self.node_progress.stop(),
+                    self.node_box.pack_forget(),
+                    self._do_checks()
+                ])
+                return
+
             except Exception as e:
-                self.after(0, lambda: messagebox.showerror("失敗", str(e)))
-            self.after(0, lambda: self.btn_node.config(state="normal", text="安裝 Node.js"))
+                self.after(0, lambda: self.node_progress.stop())
+                _update(f"❌ 自動安裝失敗：{e}")
+                self.after(0, lambda: messagebox.showerror(
+                    "自動安裝失敗",
+                    f"無法自動安裝 Node.js：\n{e}\n\n"
+                    "請手動安裝：https://nodejs.org/en/download/\n"
+                    "安裝後重新開啟本安裝程式。"
+                ))
+
         threading.Thread(target=do, daemon=True).start()
 
     # ═══ Page 2: Options ═════════════════════════════════════════════════
