@@ -56,7 +56,7 @@ OPENCLAW_WEBSITE = "https://openclaw.ai/"
 INSTALL_SCRIPT_URL = "https://openclaw.ai/install.sh"
 REQUIRED_NODE_MAJOR = 22
 WINDOW_WIDTH = 750
-WINDOW_HEIGHT = 600
+WINDOW_HEIGHT = 780
 
 # Colors – lobster theme
 C_BG = "#1a1a2e"
@@ -889,8 +889,31 @@ class InstallerApp(tk.Tk):
         self.model_status_label.pack(pady=(0,6))
 
         # ─── Middle: Scrollable model list (fills remaining space) ───
-        self.models_frame = tk.Frame(p, bg=C_BG)
-        self.models_frame.pack(padx=30, fill="both", expand=True)
+        model_container = tk.Frame(p, bg=C_BG)
+        model_container.pack(padx=30, fill="both", expand=True)
+
+        model_canvas = tk.Canvas(model_container, bg=C_BG, highlightthickness=0, bd=0)
+        model_scrollbar = tk.Scrollbar(model_container, orient="vertical", command=model_canvas.yview)
+        self.models_frame = tk.Frame(model_canvas, bg=C_BG)
+
+        self.models_frame.bind("<Configure>",
+            lambda e: model_canvas.configure(scrollregion=model_canvas.bbox("all")))
+        model_canvas.create_window((0, 0), window=self.models_frame, anchor="nw",
+                                    tags="content")
+        model_canvas.configure(yscrollcommand=model_scrollbar.set)
+
+        # Resize inner frame width to match canvas
+        def _on_canvas_resize(e):
+            model_canvas.itemconfig("content", width=e.width)
+        model_canvas.bind("<Configure>", _on_canvas_resize)
+
+        # Mouse wheel scrolling
+        def _on_mousewheel(e):
+            model_canvas.yview_scroll(int(-e.delta), "units")
+        model_canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        model_scrollbar.pack(side="right", fill="y")
+        model_canvas.pack(side="left", fill="both", expand=True)
 
         # Populate with fallback models initially
         self._populate_model_list(self.models)
