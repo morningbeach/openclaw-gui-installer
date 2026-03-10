@@ -79,27 +79,24 @@ PROVIDER_META = {
 
 # Regex patterns to match model families on OpenRouter; latest by timestamp wins
 MODEL_FAMILIES = [
-    {"re": r"^anthropic/claude-.*sonnet",           "desc": "最佳平衡（推薦）"},
-    {"re": r"^anthropic/claude-.*opus",             "desc": "最強推理能力"},
-    {"re": r"^openai/gpt-4[\w.]*$",                 "desc": "OpenAI 旗艦模型"},
-    {"re": r"^openai/o\d+$",                        "desc": "強推理模型"},
-    {"re": r"^google/gemini-[\d.]+-pro(-[\d]+)?$",   "desc": "Google 最新模型"},
+    {"re": r"^anthropic/claude-.*sonnet",   "desc": "最佳平衡（推薦）"},
+    {"re": r"^anthropic/claude-.*opus",     "desc": "最強推理能力"},
+    {"re": r"^openai/gpt-",                 "desc": "OpenAI 旗艦模型"},
+    {"re": r"^openai/o\d",                  "desc": "強推理模型"},
+    {"re": r"^google/gemini-.*pro",          "desc": "Google 最新模型"},
 ]
-
-# Skip variant / niche models (word-boundary aware to avoid matching "gemini")
-_VARIANT_SKIP = re.compile(r"(-mini|-nano|preview|audio|custom|extended|nitro|floor)", re.I)
 
 # Hardcoded fallback (used when network unavailable)
 MODELS_FALLBACK = [
-    {"id": "anthropic/claude-sonnet-4-20250514", "name": "Claude Sonnet 4", "provider": "Anthropic",
+    {"id": "anthropic/claude-sonnet-4.6", "name": "Claude Sonnet 4.6", "provider": "Anthropic",
      "desc": "最佳平衡（推薦）", "env_key": "ANTHROPIC_API_KEY", "url": "https://console.anthropic.com/settings/keys"},
-    {"id": "anthropic/claude-opus-4-20250514", "name": "Claude Opus 4", "provider": "Anthropic",
+    {"id": "anthropic/claude-opus-4.6", "name": "Claude Opus 4.6", "provider": "Anthropic",
      "desc": "最強推理能力", "env_key": "ANTHROPIC_API_KEY", "url": "https://console.anthropic.com/settings/keys"},
-    {"id": "openai/gpt-4.1", "name": "GPT-4.1", "provider": "OpenAI",
+    {"id": "openai/gpt-5.4", "name": "GPT-5.4", "provider": "OpenAI",
      "desc": "OpenAI 旗艦模型", "env_key": "OPENAI_API_KEY", "url": "https://platform.openai.com/api-keys"},
-    {"id": "openai/o3", "name": "o3", "provider": "OpenAI",
+    {"id": "openai/o3-deep-research", "name": "o3 Deep Research", "provider": "OpenAI",
      "desc": "強推理模型", "env_key": "OPENAI_API_KEY", "url": "https://platform.openai.com/api-keys"},
-    {"id": "google/gemini-2.5-pro", "name": "Gemini 2.5 Pro", "provider": "Google",
+    {"id": "google/gemini-3.1-pro-preview", "name": "Gemini 3.1 Pro", "provider": "Google",
      "desc": "Google 最新模型", "env_key": "GOOGLE_API_KEY", "url": "https://aistudio.google.com/apikey"},
 ]
 
@@ -786,6 +783,10 @@ class InstallerApp(tk.Tk):
 
     def _build_p6_model(self):
         p = self._make_page()
+
+        # Pack nav FIRST (bottom) so it's always visible
+        self._nav(p, next_text="下一步 →", next_cmd=self._save_model)
+
         tk.Label(p, text="🧠 選擇 AI 大模型", font=self.f_title, bg=C_BG, fg=C_TEXT).pack(pady=(25,10))
         tk.Label(p, text="選擇一個大語言模型作為 🦞 的大腦", font=self.f_sub, bg=C_BG, fg=C_DIM).pack(pady=(0,5))
 
@@ -815,8 +816,6 @@ class InstallerApp(tk.Tk):
 
         tk.Label(key_section, text="💡 API Key 會安全儲存在 ~/.openclaw/ 本機目錄中",
                  font=self.f_small, bg=C_BG, fg=C_DIM).pack(anchor="w", pady=(8,0))
-
-        self._nav(p, next_text="下一步 →", next_cmd=self._save_model)
 
     def _populate_model_list(self, models):
         """Clear and rebuild the model radio-button list."""
@@ -852,10 +851,8 @@ class InstallerApp(tk.Tk):
                 matches = []
                 for m in all_models:
                     mid = m.get("id", "")
-                    # Skip :free / :extended / :beta and variant models
+                    # Skip :free / :beta tag variants only
                     if ":" in mid.split("/")[-1]:
-                        continue
-                    if _VARIANT_SKIP.search(mid):
                         continue
                     if pat.search(mid):
                         matches.append(m)
