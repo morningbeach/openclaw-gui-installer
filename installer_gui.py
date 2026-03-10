@@ -15,6 +15,7 @@ import threading
 import webbrowser
 import json
 import re
+import urllib.request
 
 import tkinter as tk
 from tkinter import ttk, messagebox, font as tkfont, scrolledtext
@@ -66,8 +67,30 @@ C_INPUT = "#0f3460"
 C_BTN = "#e94560"
 C_BTN_FG = "#ffffff"
 
-# Model presets
-MODELS = [
+# ─── Provider metadata & dynamic model detection ────────────────────────────
+PROVIDER_META = {
+    "anthropic": {"env_key": "ANTHROPIC_API_KEY",
+                  "url": "https://console.anthropic.com/settings/keys", "label": "Anthropic"},
+    "openai":    {"env_key": "OPENAI_API_KEY",
+                  "url": "https://platform.openai.com/api-keys",       "label": "OpenAI"},
+    "google":    {"env_key": "GOOGLE_API_KEY",
+                  "url": "https://aistudio.google.com/apikey",         "label": "Google"},
+}
+
+# Regex patterns to match model families on OpenRouter; latest by timestamp wins
+MODEL_FAMILIES = [
+    {"re": r"^anthropic/claude-.*sonnet",           "desc": "最佳平衡（推薦）"},
+    {"re": r"^anthropic/claude-.*opus",             "desc": "最強推理能力"},
+    {"re": r"^openai/gpt-4[\w.]*$",                 "desc": "OpenAI 旗艦模型"},
+    {"re": r"^openai/o\d+$",                        "desc": "強推理模型"},
+    {"re": r"^google/gemini-[\d.]+-pro(-[\d]+)?$",   "desc": "Google 最新模型"},
+]
+
+# Skip variant / niche models (word-boundary aware to avoid matching "gemini")
+_VARIANT_SKIP = re.compile(r"(-mini|-nano|preview|audio|custom|extended|nitro|floor)", re.I)
+
+# Hardcoded fallback (used when network unavailable)
+MODELS_FALLBACK = [
     {"id": "anthropic/claude-sonnet-4-20250514", "name": "Claude Sonnet 4", "provider": "Anthropic",
      "desc": "最佳平衡（推薦）", "env_key": "ANTHROPIC_API_KEY", "url": "https://console.anthropic.com/settings/keys"},
     {"id": "anthropic/claude-opus-4-20250514", "name": "Claude Opus 4", "provider": "Anthropic",
@@ -99,7 +122,9 @@ class InstallerApp(tk.Tk):
         self.install_channel = tk.StringVar(value="latest")
         self.install_daemon = tk.BooleanVar(value=True)
         self.run_onboard = tk.BooleanVar(value=True)
-        self.selected_model = tk.StringVar(value=MODELS[0]["id"])
+        self.models = list(MODELS_FALLBACK)
+        self.models_fetched = False
+        self.selected_model = tk.StringVar(value=MODELS_FALLBACK[0]["id"])
         self.api_key_var = tk.StringVar()
         self.telegram_token_var = tk.StringVar()
         self.gateway_mode = tk.StringVar(value="local")
@@ -278,6 +303,9 @@ class InstallerApp(tk.Tk):
     def _go_check(self):
         self._show_page(1)
         self.after(300, lambda: threading.Thread(target=self._do_checks, daemon=True).start())
+        # Start fetching latest models in background (will be ready by page 6)
+        if not self.models_fetched:
+            threading.Thread(target=self._fetch_latest_models, daemon=True).start()
 
     def _sc(self, key, st, detail=""):
         icons = {"ok":("✅",C_OK),"warn":("⚠️",C_WARN),"fail":("❌",C_ERR)}
@@ -759,22 +787,18 @@ class InstallerApp(tk.Tk):
     def _build_p6_model(self):
         p = self._make_page()
         tk.Label(p, text="🧠 選擇 AI 大模型", font=self.f_title, bg=C_BG, fg=C_TEXT).pack(pady=(25,10))
-        tk.Label(p, text="選擇一個大語言模型作為 🦞 的大腦", font=self.f_sub, bg=C_BG, fg=C_DIM).pack(pady=(0,15))
+        tk.Label(p, text="選擇一個大語言模型作為 🦞 的大腦", font=self.f_sub, bg=C_BG, fg=C_DIM).pack(pady=(0,5))
 
-        models_frame = tk.Frame(p, bg=C_BG)
-        models_frame.pack(padx=30, fill="both", expand=True)
+        # Status label for fetch progress
+        self.model_status_label = tk.Label(p, text="", font=self.f_small, bg=C_BG, fg=C_DIM)
+        self.model_status_label.pack(pady=(0,10))
 
-        for m in MODELS:
-            mf = tk.Frame(models_frame, bg=C_INPUT, padx=12, pady=10)
-            mf.pack(fill="x", pady=4)
+        # Scrollable model list container (populated dynamically)
+        self.models_frame = tk.Frame(p, bg=C_BG)
+        self.models_frame.pack(padx=30, fill="both", expand=True)
 
-            left = tk.Frame(mf, bg=C_INPUT)
-            left.pack(side="left", fill="x", expand=True)
-
-            rb = ttk.Radiobutton(left, text=f"{m['name']}  ({m['provider']})",
-                                  variable=self.selected_model, value=m["id"])
-            rb.pack(anchor="w")
-            tk.Label(left, text=m["desc"], font=self.f_small, bg=C_INPUT, fg=C_DIM).pack(anchor="w", padx=(25,0))
+        # Populate with fallback models initially
+        self._populate_model_list(self.models)
 
         # API Key input
         key_section = tk.Frame(p, bg=C_BG)
@@ -794,9 +818,86 @@ class InstallerApp(tk.Tk):
 
         self._nav(p, next_text="下一步 →", next_cmd=self._save_model)
 
+    def _populate_model_list(self, models):
+        """Clear and rebuild the model radio-button list."""
+        for w in self.models_frame.winfo_children():
+            w.destroy()
+        for m in models:
+            mf = tk.Frame(self.models_frame, bg=C_INPUT, padx=12, pady=10)
+            mf.pack(fill="x", pady=4)
+            left = tk.Frame(mf, bg=C_INPUT)
+            left.pack(side="left", fill="x", expand=True)
+            rb = ttk.Radiobutton(left, text=f"{m['name']}  ({m['provider']})",
+                                  variable=self.selected_model, value=m["id"])
+            rb.pack(anchor="w")
+            tk.Label(left, text=m["desc"], font=self.f_small, bg=C_INPUT, fg=C_DIM).pack(anchor="w", padx=(25,0))
+
+    def _fetch_latest_models(self):
+        """Fetch latest models from OpenRouter API and update the model list."""
+        self.after(0, lambda: self.model_status_label.config(
+            text="🔄 正在線上取得最新模型列表…", fg=C_WARN))
+        try:
+            req = urllib.request.Request(
+                "https://openrouter.ai/api/v1/models",
+                headers={"User-Agent": "OpenClaw-Installer/1.0"}
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode())
+
+            all_models = data.get("data", [])
+            result = []
+
+            for fam in MODEL_FAMILIES:
+                pat = re.compile(fam["re"])
+                matches = []
+                for m in all_models:
+                    mid = m.get("id", "")
+                    # Skip :free / :extended / :beta and variant models
+                    if ":" in mid.split("/")[-1]:
+                        continue
+                    if _VARIANT_SKIP.search(mid):
+                        continue
+                    if pat.search(mid):
+                        matches.append(m)
+
+                if not matches:
+                    continue
+
+                # Pick the most recently created model in this family
+                matches.sort(key=lambda x: x.get("created", 0), reverse=True)
+                best = matches[0]
+                provider_key = best["id"].split("/")[0]
+                meta = PROVIDER_META.get(provider_key)
+                if not meta:
+                    continue
+
+                result.append({
+                    "id": best["id"],
+                    "name": best.get("name", best["id"].split("/")[-1]),
+                    "provider": meta["label"],
+                    "desc": fam["desc"],
+                    "env_key": meta["env_key"],
+                    "url": meta["url"],
+                })
+
+            if result:
+                self.models = result
+                self.selected_model.set(result[0]["id"])
+                self.models_fetched = True
+                self.after(0, lambda: self._populate_model_list(result))
+                self.after(0, lambda: self.model_status_label.config(
+                    text=f"✅ 已取得最新模型（{len(result)} 個）", fg=C_OK))
+            else:
+                raise ValueError("無符合模型")
+
+        except Exception:
+            self.models_fetched = True  # don't retry
+            self.after(0, lambda: self.model_status_label.config(
+                text="⚠️ 線上取得失敗，使用內建模型列表", fg=C_WARN))
+
     def _open_api_url(self):
         mid = self.selected_model.get()
-        for m in MODELS:
+        for m in self.models:
             if m["id"] == mid:
                 webbrowser.open(m["url"]); return
 
@@ -817,7 +918,7 @@ class InstallerApp(tk.Tk):
 
                 # Save API key to env-compatible format
                 if key:
-                    for m in MODELS:
+                    for m in self.models:
                         if m["id"] == mid:
                             env_path = os.path.expanduser("~/.openclaw/.env")
                             lines = []
