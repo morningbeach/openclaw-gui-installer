@@ -15,7 +15,12 @@ import threading
 import webbrowser
 import json
 import re
+import hashlib
+import base64
+import socket
 import urllib.request
+import urllib.parse
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import tkinter as tk
 from tkinter import ttk, messagebox, font as tkfont, scrolledtext
@@ -76,6 +81,13 @@ PROVIDER_META = {
     "google":    {"env_key": "GOOGLE_API_KEY",
                   "url": "https://aistudio.google.com/apikey",         "label": "Google"},
 }
+
+# ─── OpenAI OAuth PKCE ────────────────────────────────────────────────────
+OPENAI_AUTH_URL = "https://auth.openai.com/authorize"
+OPENAI_TOKEN_URL = "https://auth.openai.com/oauth/token"
+OPENAI_CLIENT_ID = "pdlLIX2Y72MIl2rhLhTE9VV9bN905kBh"  # ChatGPT public PKCE client
+OPENAI_SCOPE = "openid profile email offline_access"
+OPENAI_AUDIENCE = "https://api.openai.com/v1"
 
 # Regex patterns to match model families on OpenRouter; latest by timestamp wins
 MODEL_FAMILIES = [
@@ -801,21 +813,50 @@ class InstallerApp(tk.Tk):
         # Populate with fallback models initially
         self._populate_model_list(self.models)
 
-        # API Key input
-        key_section = tk.Frame(p, bg=C_BG)
-        key_section.pack(padx=30, fill="x", pady=(15,0))
+        # ─── Auth section ───
+        auth_section = tk.Frame(p, bg=C_BG)
+        auth_section.pack(padx=30, fill="x", pady=(12,0))
 
-        tk.Label(key_section, text="API Key：", font=self.f_body, bg=C_BG, fg=C_TEXT).pack(anchor="w")
-        kf = tk.Frame(key_section, bg=C_BG)
-        kf.pack(fill="x", pady=(5,0))
+        # OAuth login for OpenAI
+        oauth_frame = tk.Frame(auth_section, bg=C_INPUT, padx=15, pady=12)
+        oauth_frame.pack(fill="x")
+
+        tk.Label(oauth_frame, text="🔐 方式一：OAuth 登入（僅 OpenAI）",
+                 font=self.f_body, bg=C_INPUT, fg=C_TEXT).pack(anchor="w")
+        tk.Label(oauth_frame, text="使用 Google / Apple / Microsoft 帳號登入 OpenAI，自動取得 Token",
+                 font=self.f_small, bg=C_INPUT, fg=C_DIM).pack(anchor="w", pady=(2,8))
+
+        oauth_btn_row = tk.Frame(oauth_frame, bg=C_INPUT)
+        oauth_btn_row.pack(fill="x")
+        self.oauth_btn = tk.Button(oauth_btn_row, text="🚀 使用 OpenAI 帳號登入", font=self.f_body,
+                                    bg="#10a37f", fg="#ffffff", bd=0, padx=20, pady=8,
+                                    cursor="hand2", command=self._oauth_login_openai)
+        self.oauth_btn.pack(side="left")
+        self.oauth_status = tk.Label(oauth_btn_row, text="", font=self.f_small, bg=C_INPUT, fg=C_DIM)
+        self.oauth_status.pack(side="left", padx=(12,0))
+
+        # Divider
+        div_frame = tk.Frame(auth_section, bg=C_BG)
+        div_frame.pack(fill="x", pady=(10,10))
+        tk.Frame(div_frame, bg=C_DIM, height=1).pack(side="left", fill="x", expand=True)
+        tk.Label(div_frame, text=" 或 ", font=self.f_small, bg=C_BG, fg=C_DIM).pack(side="left", padx=8)
+        tk.Frame(div_frame, bg=C_DIM, height=1).pack(side="left", fill="x", expand=True)
+
+        # Manual API Key input
+        key_frame = tk.Frame(auth_section, bg=C_INPUT, padx=15, pady=12)
+        key_frame.pack(fill="x")
+        tk.Label(key_frame, text="🔑 方式二：手動輸入 API Key", font=self.f_body, bg=C_INPUT, fg=C_TEXT).pack(anchor="w")
+
+        kf = tk.Frame(key_frame, bg=C_INPUT)
+        kf.pack(fill="x", pady=(8,0))
         self.api_entry = tk.Entry(kf, textvariable=self.api_key_var, font=self.f_mono, show="•",
-                                   bg=C_BG2, fg=C_TEXT, insertbackground=C_TEXT, bd=0, width=50)
+                                   bg=C_BG2, fg=C_TEXT, insertbackground=C_TEXT, bd=0, width=45)
         self.api_entry.pack(side="left", ipady=6)
         tk.Button(kf, text="取得 Key", font=self.f_small, bg=C_ACCENT, fg=C_BTN_FG, bd=0,
                   padx=12, pady=4, cursor="hand2", command=self._open_api_url).pack(side="left", padx=(10,0))
 
-        tk.Label(key_section, text="💡 API Key 會安全儲存在 ~/.openclaw/ 本機目錄中",
-                 font=self.f_small, bg=C_BG, fg=C_DIM).pack(anchor="w", pady=(8,0))
+        tk.Label(key_frame, text="💡 API Key 會安全儲存在 ~/.openclaw/ 本機目錄中",
+                 font=self.f_small, bg=C_INPUT, fg=C_DIM).pack(anchor="w", pady=(6,0))
 
     def _populate_model_list(self, models):
         """Clear and rebuild the model radio-button list."""
@@ -831,7 +872,111 @@ class InstallerApp(tk.Tk):
             rb.pack(anchor="w")
             tk.Label(left, text=m["desc"], font=self.f_small, bg=C_INPUT, fg=C_DIM).pack(anchor="w", padx=(25,0))
 
-    def _fetch_latest_models(self):
+    def _oauth_login_openai(self):
+        """OAuth 2.0 PKCE login for OpenAI — opens browser, receives token via local callback."""
+        self.oauth_btn.config(state="disabled", text="⏳ 等待登入中…")
+        self.oauth_status.config(text="瀏覽器已開啟，請完成登入…", fg=C_WARN)
+
+        def do():
+            auth_code = [None]
+            error_msg = [None]
+
+            # ── 1. Generate PKCE verifier & challenge ──
+            code_verifier = secrets.token_urlsafe(64)[:128]
+            code_challenge = base64.urlsafe_b64encode(
+                hashlib.sha256(code_verifier.encode()).digest()
+            ).rstrip(b"=").decode()
+            state = secrets.token_urlsafe(32)
+
+            # ── 2. Find free port & start local callback server ──
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("127.0.0.1", 0))
+                port = s.getsockname()[1]
+            redirect_uri = f"http://127.0.0.1:{port}/callback"
+
+            class _Handler(BaseHTTPRequestHandler):
+                def do_GET(self):
+                    qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+                    if "code" in qs:
+                        auth_code[0] = qs["code"][0]
+                        body = ("<html><body style='font-family:system-ui;text-align:center;padding:60px;"
+                                "background:#1a1a2e;color:#eaeaea'>"
+                                "<h1>✅ 登入成功！</h1><p>請返回 OpenClaw 安裝程式。</p>"
+                                "</body></html>")
+                    else:
+                        error_msg[0] = qs.get("error_description", qs.get("error", ["未知錯誤"]))[0]
+                        body = ("<html><body style='font-family:system-ui;text-align:center;padding:60px;"
+                                "background:#1a1a2e;color:#e74c3c'>"
+                                f"<h1>❌ 登入失敗</h1><p>{error_msg[0]}</p>"
+                                "</body></html>")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.end_headers()
+                    self.wfile.write(body.encode())
+
+                def log_message(self, *a): pass
+
+            server = HTTPServer(("127.0.0.1", port), _Handler)
+            server.timeout = 180  # 3 min timeout
+
+            # ── 3. Open browser to OpenAI auth ──
+            params = urllib.parse.urlencode({
+                "client_id": OPENAI_CLIENT_ID,
+                "redirect_uri": redirect_uri,
+                "response_type": "code",
+                "scope": OPENAI_SCOPE,
+                "audience": OPENAI_AUDIENCE,
+                "code_challenge": code_challenge,
+                "code_challenge_method": "S256",
+                "state": state,
+            })
+            webbrowser.open(f"{OPENAI_AUTH_URL}?{params}")
+
+            # ── 4. Wait for callback ──
+            server.handle_request()
+            server.server_close()
+
+            if not auth_code[0]:
+                err = error_msg[0] or "登入逾時或已取消"
+                self.after(0, lambda: self.oauth_status.config(text=f"❌ {err}", fg=C_ERR))
+                self.after(0, lambda: self.oauth_btn.config(
+                    state="normal", text="🚀 使用 OpenAI 帳號登入"))
+                return
+
+            # ── 5. Exchange code for access token ──
+            self.after(0, lambda: self.oauth_status.config(text="🔄 正在取得 Token…", fg=C_WARN))
+            try:
+                token_data = urllib.parse.urlencode({
+                    "grant_type": "authorization_code",
+                    "client_id": OPENAI_CLIENT_ID,
+                    "code": auth_code[0],
+                    "redirect_uri": redirect_uri,
+                    "code_verifier": code_verifier,
+                }).encode()
+                req = urllib.request.Request(
+                    OPENAI_TOKEN_URL,
+                    data=token_data,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"}
+                )
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    result = json.loads(resp.read().decode())
+
+                access_token = result.get("access_token", "")
+                if access_token:
+                    self.after(0, lambda: self.api_key_var.set(access_token))
+                    self.after(0, lambda: self.oauth_status.config(
+                        text="✅ 登入成功！Token 已自動填入", fg=C_OK))
+                else:
+                    raise ValueError("回應中沒有 access_token")
+
+            except Exception as e:
+                self.after(0, lambda: self.oauth_status.config(
+                    text=f"❌ Token 交換失敗：{e}", fg=C_ERR))
+
+            self.after(0, lambda: self.oauth_btn.config(
+                state="normal", text="🚀 使用 OpenAI 帳號登入"))
+
+        threading.Thread(target=do, daemon=True).start()
         """Fetch latest models from OpenRouter API and update the model list."""
         self.after(0, lambda: self.model_status_label.config(
             text="🔄 正在線上取得最新模型列表…", fg=C_WARN))
