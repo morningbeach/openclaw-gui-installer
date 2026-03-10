@@ -1116,9 +1116,17 @@ class InstallerApp(tk.Tk):
                 if os.path.exists(config_path):
                     with open(config_path) as f:
                         config = json.load(f)
-                if "agent" not in config:
-                    config["agent"] = {}
-                config["agent"]["model"] = mid
+                if "agents" not in config:
+                    config["agents"] = {}
+                if "defaults" not in config["agents"]:
+                    config["agents"]["defaults"] = {}
+                config["agents"]["defaults"]["model"] = {
+                    "primary": mid,
+                    "fallbacks": []
+                }
+                config["agents"]["defaults"]["models"] = {mid: {}}
+                # Remove legacy key if present
+                config.pop("agent", None)
 
                 # Save API key to env-compatible format
                 if key:
@@ -1227,7 +1235,7 @@ class InstallerApp(tk.Tk):
 
             # Use openclaw agent command
             result = subprocess.run(
-                ["openclaw", "agent", "--message", msg, "--no-stream"],
+                ["openclaw", "agent", "--message", msg],
                 capture_output=True, text=True, timeout=60, env=env
             )
 
