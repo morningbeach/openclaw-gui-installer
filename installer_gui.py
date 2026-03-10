@@ -15,12 +15,8 @@ import threading
 import webbrowser
 import json
 import re
-import hashlib
-import base64
-import socket
 import urllib.request
 import urllib.parse
-from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import tkinter as tk
 from tkinter import ttk, messagebox, font as tkfont, scrolledtext
@@ -81,13 +77,6 @@ PROVIDER_META = {
     "google":    {"env_key": "GOOGLE_API_KEY",
                   "url": "https://aistudio.google.com/apikey",         "label": "Google"},
 }
-
-# ─── OpenAI OAuth PKCE ────────────────────────────────────────────────────
-OPENAI_AUTH_URL = "https://auth.openai.com/authorize"
-OPENAI_TOKEN_URL = "https://auth.openai.com/oauth/token"
-OPENAI_CLIENT_ID = "pdlLIX2Y72MIl2rhLhTE9VV9bN905kBh"  # ChatGPT public PKCE client
-OPENAI_SCOPE = "openid profile email offline_access"
-OPENAI_AUDIENCE = "https://api.openai.com/v1"
 
 # Regex patterns to match model families on OpenRouter; latest by timestamp wins
 MODEL_FAMILIES = [
@@ -761,54 +750,115 @@ class InstallerApp(tk.Tk):
         # Pack nav FIRST (bottom) so it's always visible
         self._nav(p, next_text="下一步 →", next_cmd=self._save_telegram)
 
-        tk.Label(p, text="💬 連結 Telegram", font=self.f_title, bg=C_BG, fg=C_TEXT).pack(pady=(20,8))
+        tk.Label(p, text="💬 連結 Telegram", font=self.f_title, bg=C_BG, fg=C_TEXT).pack(pady=(18,6))
 
-        # Content area (no canvas/scrollbar — fits in window)
+        # Content area
         inner = tk.Frame(p, bg=C_BG)
         inner.pack(padx=30, fill="both", expand=True)
 
-        # Step 1
+        # Step 1: Create Bot
         s1 = tk.Frame(inner, bg=C_INPUT, padx=15, pady=10)
-        s1.pack(fill="x", pady=5)
+        s1.pack(fill="x", pady=4)
         tk.Label(s1, text="Step 1：建立 Telegram Bot", font=self.f_sub, bg=C_INPUT, fg=C_ACCENT).pack(anchor="w")
         tk.Label(s1, text="① 在 Telegram 搜尋 @BotFather 並開啟對話\n"
-                 "② 發送 /newbot\n"
-                 "③ 輸入機器人名稱，例如：My OpenClaw\n"
-                 "④ 輸入機器人帳號（需以 bot 結尾），例如：my_openclaw_bot\n"
-                 "⑤ BotFather 會回覆一組 Bot Token，格式像：\n"
-                 "   123456789:ABCdefGHIjklMNOpqrsTUVwxyz",
+                 "② 發送 /newbot → 輸入名稱（如 My OpenClaw）\n"
+                 "③ 輸入帳號（需以 bot 結尾，如 my_openclaw_bot）\n"
+                 "④ BotFather 會回覆 Bot Token（格式：123456:ABC…xyz）",
                  font=self.f_small, bg=C_INPUT, fg=C_TEXT, justify="left", wraplength=600).pack(anchor="w", pady=(4,0))
         tk.Button(s1, text="📱 開啟 BotFather", font=self.f_small, bg=C_BTN, fg=C_BTN_FG,
                   bd=0, padx=12, pady=4, cursor="hand2",
                   command=lambda: webbrowser.open("https://t.me/BotFather")).pack(anchor="w", pady=(6,0))
 
-        # Step 2
+        # Step 2: Paste Token
         s2 = tk.Frame(inner, bg=C_INPUT, padx=15, pady=10)
-        s2.pack(fill="x", pady=5)
+        s2.pack(fill="x", pady=4)
         tk.Label(s2, text="Step 2：貼上 Bot Token", font=self.f_sub, bg=C_INPUT, fg=C_ACCENT).pack(anchor="w")
-        tk.Label(s2, text="把 BotFather 給你的 Token 貼到下方：",
-                 font=self.f_small, bg=C_INPUT, fg=C_TEXT).pack(anchor="w", pady=(4,0))
         tf = tk.Frame(s2, bg=C_INPUT)
         tf.pack(fill="x", pady=(6,0))
         tk.Label(tf, text="Bot Token：", font=self.f_body, bg=C_INPUT, fg=C_DIM).pack(side="left")
         self.tg_entry = tk.Entry(tf, textvariable=self.telegram_token_var, font=self.f_mono,
-                                  bg=C_BG2, fg=C_TEXT, insertbackground=C_TEXT, bd=0, width=45)
+                                  bg=C_BG2, fg=C_TEXT, insertbackground=C_TEXT, bd=0, width=42)
         self.tg_entry.pack(side="left", padx=(5,0), ipady=5)
         self._bind_paste(self.tg_entry)
 
-        # Step 3
+        # Step 3: Pairing (DM authorization)
         s3 = tk.Frame(inner, bg=C_INPUT, padx=15, pady=10)
-        s3.pack(fill="x", pady=5)
-        tk.Label(s3, text="Step 3：設定完成後", font=self.f_sub, bg=C_INPUT, fg=C_ACCENT).pack(anchor="w")
-        tk.Label(s3, text="• 在 Telegram 搜尋你剛建立的 bot 帳號\n"
-                 "• 點「Start」開始對話\n"
-                 "• OpenClaw 會自動回覆你！",
-                 font=self.f_small, bg=C_INPUT, fg=C_TEXT, justify="left").pack(anchor="w", pady=(4,0))
+        s3.pack(fill="x", pady=4)
+        tk.Label(s3, text="Step 3：配對你的 Telegram 帳號", font=self.f_sub, bg=C_INPUT, fg=C_ACCENT).pack(anchor="w")
+        tk.Label(s3, text="OpenClaw 使用 DM 配對機制確認身份：\n"
+                 "① 在 Telegram 搜尋你剛建立的 Bot，點「Start」\n"
+                 "② Bot 會回覆一組 配對碼（6 位數字）\n"
+                 "③ 在下方輸入配對碼，或按「自動核准」讓它自動通過",
+                 font=self.f_small, bg=C_INPUT, fg=C_TEXT, justify="left", wraplength=600).pack(anchor="w", pady=(4,0))
+
+        pair_row = tk.Frame(s3, bg=C_INPUT)
+        pair_row.pack(fill="x", pady=(8,0))
+        tk.Label(pair_row, text="配對碼：", font=self.f_body, bg=C_INPUT, fg=C_DIM).pack(side="left")
+        self.pairing_code_var = tk.StringVar()
+        pair_entry = tk.Entry(pair_row, textvariable=self.pairing_code_var, font=self.f_mono,
+                              bg=C_BG2, fg=C_TEXT, insertbackground=C_TEXT, bd=0, width=10)
+        pair_entry.pack(side="left", padx=(5,0), ipady=5)
+        self._bind_paste(pair_entry)
+        tk.Button(pair_row, text="✅ 核准配對", font=self.f_small, bg=C_OK, fg="#ffffff",
+                  bd=0, padx=12, pady=4, cursor="hand2",
+                  command=self._approve_pairing).pack(side="left", padx=(8,0))
+
+        self.pairing_status = tk.Label(s3, text="", font=self.f_small, bg=C_INPUT, fg=C_DIM)
+        self.pairing_status.pack(anchor="w", pady=(4,0))
+
+        # Step 4: Alternative — open DM policy
+        s4 = tk.Frame(inner, bg=C_INPUT, padx=15, pady=10)
+        s4.pack(fill="x", pady=4)
+        tk.Label(s4, text="💡 或者：跳過配對，允許所有 DM", font=self.f_sub, bg=C_INPUT, fg=C_WARN).pack(anchor="w")
+        tk.Label(s4, text="如果你是唯一使用者，可以設定開放模式（不需配對碼）",
+                 font=self.f_small, bg=C_INPUT, fg=C_DIM).pack(anchor="w", pady=(2,0))
+        tk.Button(s4, text="🔓 設為開放模式", font=self.f_small, bg=C_WARN, fg="#ffffff",
+                  bd=0, padx=12, pady=4, cursor="hand2",
+                  command=self._set_dm_open).pack(anchor="w", pady=(6,0))
+        self.dm_policy_status = tk.Label(s4, text="", font=self.f_small, bg=C_INPUT, fg=C_DIM)
+        self.dm_policy_status.pack(anchor="w", pady=(2,0))
+
+    def _approve_pairing(self):
+        code = self.pairing_code_var.get().strip()
+        if not code:
+            self.pairing_status.config(text="⚠️ 請先輸入配對碼", fg=C_WARN)
+            return
+        self.pairing_status.config(text="⏳ 正在核准…", fg=C_WARN)
+        def do():
+            try:
+                env = os.environ.copy()
+                env["PATH"] = "/usr/local/bin:/opt/homebrew/bin:" + env.get("PATH", "")
+                r = subprocess.run(
+                    ["openclaw", "pairing", "approve", code],
+                    capture_output=True, text=True, timeout=15, env=env
+                )
+                if r.returncode == 0:
+                    self.after(0, lambda: self.pairing_status.config(text="✅ 配對成功！你的 Telegram 已連結", fg=C_OK))
+                else:
+                    err = r.stderr.strip() or r.stdout.strip() or "核准失敗"
+                    self.after(0, lambda: self.pairing_status.config(text=f"❌ {err[:100]}", fg=C_ERR))
+            except Exception as e:
+                self.after(0, lambda: self.pairing_status.config(text=f"❌ {e}", fg=C_ERR))
+        threading.Thread(target=do, daemon=True).start()
+
+    def _set_dm_open(self):
+        def do():
+            try:
+                env = os.environ.copy()
+                env["PATH"] = "/usr/local/bin:/opt/homebrew/bin:" + env.get("PATH", "")
+                subprocess.run(
+                    ["openclaw", "config", "set", "channels.telegram.dmPolicy", "open"],
+                    capture_output=True, text=True, timeout=15, env=env
+                )
+                self.after(0, lambda: self.dm_policy_status.config(text="✅ 已設為開放模式，所有 DM 都會回覆", fg=C_OK))
+            except Exception as e:
+                self.after(0, lambda: self.dm_policy_status.config(text=f"❌ {e}", fg=C_ERR))
+        threading.Thread(target=do, daemon=True).start()
 
     def _save_telegram(self):
         token = self.telegram_token_var.get().strip()
         if token:
-            # Save token to openclaw config
+            # Save token + enabled + dmPolicy to openclaw config
             def do():
                 try:
                     config_path = os.path.expanduser("~/.openclaw/openclaw.json")
@@ -818,7 +868,12 @@ class InstallerApp(tk.Tk):
                             config = json.load(f)
                     if "channels" not in config:
                         config["channels"] = {}
-                    config["channels"]["telegram"] = {"botToken": token}
+                    tg = config["channels"].get("telegram", {})
+                    tg["botToken"] = token
+                    tg["enabled"] = True
+                    if "dmPolicy" not in tg:
+                        tg["dmPolicy"] = "pairing"
+                    config["channels"]["telegram"] = tg
 
                     os.makedirs(os.path.dirname(config_path), exist_ok=True)
                     with open(config_path, "w") as f:
@@ -840,45 +895,34 @@ class InstallerApp(tk.Tk):
         auth_section = tk.Frame(p, bg=C_BG)
         auth_section.pack(side="bottom", padx=30, fill="x", pady=(8,0))
 
-        # Manual API Key input
+        # API Key input
         key_frame = tk.Frame(auth_section, bg=C_INPUT, padx=15, pady=10)
         key_frame.pack(fill="x")
-        tk.Label(key_frame, text="🔑 方式一：手動輸入 API Key", font=self.f_body, bg=C_INPUT, fg=C_TEXT).pack(anchor="w")
+        tk.Label(key_frame, text="🔑 輸入 API Key", font=self.f_body, bg=C_INPUT, fg=C_TEXT).pack(anchor="w")
 
         kf = tk.Frame(key_frame, bg=C_INPUT)
         kf.pack(fill="x", pady=(6,0))
         self.api_entry = tk.Entry(kf, textvariable=self.api_key_var, font=self.f_mono, show="•",
-                                   bg=C_BG2, fg=C_TEXT, insertbackground=C_TEXT, bd=0, width=45)
-        self.api_entry.pack(side="left", ipady=6)
+                                   bg=C_BG2, fg=C_TEXT, insertbackground=C_TEXT, bd=0, width=40)
+        self.api_entry.pack(side="left", ipady=6, fill="x", expand=True)
         self._bind_paste(self.api_entry)
-        tk.Button(kf, text="取得 Key", font=self.f_small, bg=C_ACCENT, fg=C_BTN_FG, bd=0,
-                  padx=12, pady=4, cursor="hand2", command=self._open_api_url).pack(side="left", padx=(10,0))
 
-        tk.Label(key_frame, text="💡 API Key 會安全儲存在 ~/.openclaw/ 本機目錄中",
-                 font=self.f_small, bg=C_INPUT, fg=C_DIM).pack(anchor="w", pady=(4,0))
+        # Quick-link buttons for each provider
+        btn_row = tk.Frame(key_frame, bg=C_INPUT)
+        btn_row.pack(fill="x", pady=(8,0))
+        tk.Label(btn_row, text="取得 Key：", font=self.f_small, bg=C_INPUT, fg=C_DIM).pack(side="left")
+        for prov, info in [
+            ("Anthropic", "https://console.anthropic.com/settings/keys"),
+            ("OpenAI", "https://platform.openai.com/api-keys"),
+            ("Google", "https://aistudio.google.com/apikey"),
+        ]:
+            url = info
+            tk.Button(btn_row, text=prov, font=self.f_small,
+                      bg=C_BG2, fg=C_ACCENT2, bd=0, padx=10, pady=2, cursor="hand2",
+                      command=lambda u=url: webbrowser.open(u)).pack(side="left", padx=(6,0))
 
-        # Divider
-        div_frame = tk.Frame(auth_section, bg=C_BG)
-        div_frame.pack(fill="x", pady=(6,6))
-        tk.Frame(div_frame, bg=C_DIM, height=1).pack(side="left", fill="x", expand=True)
-        tk.Label(div_frame, text=" 或 ", font=self.f_small, bg=C_BG, fg=C_DIM).pack(side="left", padx=8)
-        tk.Frame(div_frame, bg=C_DIM, height=1).pack(side="left", fill="x", expand=True)
-
-        # OAuth login for OpenAI
-        oauth_frame = tk.Frame(auth_section, bg=C_INPUT, padx=15, pady=10)
-        oauth_frame.pack(fill="x")
-
-        tk.Label(oauth_frame, text="🔐 方式二：OAuth 登入（僅 OpenAI）",
-                 font=self.f_body, bg=C_INPUT, fg=C_TEXT).pack(anchor="w")
-
-        oauth_btn_row = tk.Frame(oauth_frame, bg=C_INPUT)
-        oauth_btn_row.pack(fill="x", pady=(4,0))
-        self.oauth_btn = tk.Button(oauth_btn_row, text="🚀 使用 OpenAI 帳號登入", font=self.f_body,
-                                    bg="#10a37f", fg="#ffffff", bd=0, padx=20, pady=6,
-                                    cursor="hand2", command=self._oauth_login_openai)
-        self.oauth_btn.pack(side="left")
-        self.oauth_status = tk.Label(oauth_btn_row, text="", font=self.f_small, bg=C_INPUT, fg=C_DIM)
-        self.oauth_status.pack(side="left", padx=(12,0))
+        tk.Label(key_frame, text="💡 選好模型後貼上對應的 API Key，會安全儲存在 ~/.openclaw/",
+                 font=self.f_small, bg=C_INPUT, fg=C_DIM).pack(anchor="w", pady=(6,0))
 
         # ─── Top: Title ───
         tk.Label(p, text="🧠 選擇 AI 大模型", font=self.f_title, bg=C_BG, fg=C_TEXT).pack(pady=(18,6))
@@ -931,112 +975,6 @@ class InstallerApp(tk.Tk):
                                   variable=self.selected_model, value=m["id"])
             rb.pack(anchor="w")
             tk.Label(left, text=m["desc"], font=self.f_small, bg=C_INPUT, fg=C_DIM).pack(anchor="w", padx=(25,0))
-
-    def _oauth_login_openai(self):
-        """OAuth 2.0 PKCE login for OpenAI — opens browser, receives token via local callback."""
-        self.oauth_btn.config(state="disabled", text="⏳ 等待登入中…")
-        self.oauth_status.config(text="瀏覽器已開啟，請完成登入…", fg=C_WARN)
-
-        def do():
-            auth_code = [None]
-            error_msg = [None]
-
-            # ── 1. Generate PKCE verifier & challenge ──
-            code_verifier = secrets.token_urlsafe(64)[:128]
-            code_challenge = base64.urlsafe_b64encode(
-                hashlib.sha256(code_verifier.encode()).digest()
-            ).rstrip(b"=").decode()
-            state = secrets.token_urlsafe(32)
-
-            # ── 2. Find free port & start local callback server ──
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(("127.0.0.1", 0))
-                port = s.getsockname()[1]
-            redirect_uri = f"http://127.0.0.1:{port}/callback"
-
-            class _Handler(BaseHTTPRequestHandler):
-                def do_GET(self):
-                    qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-                    if "code" in qs:
-                        auth_code[0] = qs["code"][0]
-                        body = ("<html><body style='font-family:system-ui;text-align:center;padding:60px;"
-                                "background:#1a1a2e;color:#eaeaea'>"
-                                "<h1>✅ 登入成功！</h1><p>請返回 OpenClaw 安裝程式。</p>"
-                                "</body></html>")
-                    else:
-                        error_msg[0] = qs.get("error_description", qs.get("error", ["未知錯誤"]))[0]
-                        body = ("<html><body style='font-family:system-ui;text-align:center;padding:60px;"
-                                "background:#1a1a2e;color:#e74c3c'>"
-                                f"<h1>❌ 登入失敗</h1><p>{error_msg[0]}</p>"
-                                "</body></html>")
-                    self.send_response(200)
-                    self.send_header("Content-Type", "text/html; charset=utf-8")
-                    self.end_headers()
-                    self.wfile.write(body.encode())
-
-                def log_message(self, *a): pass
-
-            server = HTTPServer(("127.0.0.1", port), _Handler)
-            server.timeout = 180  # 3 min timeout
-
-            # ── 3. Open browser to OpenAI auth ──
-            params = urllib.parse.urlencode({
-                "client_id": OPENAI_CLIENT_ID,
-                "redirect_uri": redirect_uri,
-                "response_type": "code",
-                "scope": OPENAI_SCOPE,
-                "audience": OPENAI_AUDIENCE,
-                "code_challenge": code_challenge,
-                "code_challenge_method": "S256",
-                "state": state,
-            })
-            webbrowser.open(f"{OPENAI_AUTH_URL}?{params}")
-
-            # ── 4. Wait for callback ──
-            server.handle_request()
-            server.server_close()
-
-            if not auth_code[0]:
-                err = error_msg[0] or "登入逾時或已取消"
-                self.after(0, lambda: self.oauth_status.config(text=f"❌ {err}", fg=C_ERR))
-                self.after(0, lambda: self.oauth_btn.config(
-                    state="normal", text="🚀 使用 OpenAI 帳號登入"))
-                return
-
-            # ── 5. Exchange code for access token ──
-            self.after(0, lambda: self.oauth_status.config(text="🔄 正在取得 Token…", fg=C_WARN))
-            try:
-                token_data = urllib.parse.urlencode({
-                    "grant_type": "authorization_code",
-                    "client_id": OPENAI_CLIENT_ID,
-                    "code": auth_code[0],
-                    "redirect_uri": redirect_uri,
-                    "code_verifier": code_verifier,
-                }).encode()
-                req = urllib.request.Request(
-                    OPENAI_TOKEN_URL,
-                    data=token_data,
-                    headers={"Content-Type": "application/x-www-form-urlencoded"}
-                )
-                with urllib.request.urlopen(req, timeout=30) as resp:
-                    result = json.loads(resp.read().decode())
-
-                access_token = result.get("access_token", "")
-                if access_token:
-                    self.after(0, lambda: self.api_key_var.set(access_token))
-                    self.after(0, lambda: self.oauth_status.config(
-                        text="✅ 登入成功！Token 已自動填入", fg=C_OK))
-                else:
-                    raise ValueError("回應中沒有 access_token")
-
-            except Exception as e:
-                self.after(0, lambda: self.oauth_status.config(
-                    text=f"❌ Token 交換失敗：{e}", fg=C_ERR))
-
-            self.after(0, lambda: self.oauth_btn.config(
-                state="normal", text="🚀 使用 OpenAI 帳號登入"))
-
-        threading.Thread(target=do, daemon=True).start()
 
     def _fetch_latest_models(self):
         """Fetch latest models from OpenRouter API and update the model list."""
@@ -1253,9 +1191,10 @@ class InstallerApp(tk.Tk):
                 )
                 import time; time.sleep(3)
 
-            # Use openclaw agent command
+            # Use openclaw agent command (instruct to reply in Chinese)
+            full_msg = f"[請用繁體中文回覆] {msg}"
             result = subprocess.run(
-                ["openclaw", "agent", "--agent", "main", "--message", msg],
+                ["openclaw", "agent", "--agent", "main", "--message", full_msg],
                 capture_output=True, text=True, timeout=120, env=env
             )
 
@@ -1295,53 +1234,144 @@ class InstallerApp(tk.Tk):
 
     def _build_p8_done(self):
         p = self._make_page()
-        tk.Frame(p, bg=C_BG, height=35).pack()
-        tk.Label(p, text="🎉", font=("Apple Color Emoji", 55), bg=C_BG).pack(pady=(0,8))
-        tk.Label(p, text="全部完成！", font=self.f_title, bg=C_BG, fg=C_OK).pack(pady=(0,8))
+        tk.Frame(p, bg=C_BG, height=25).pack()
+        tk.Label(p, text="🎉", font=("Apple Color Emoji", 48), bg=C_BG).pack(pady=(0,6))
+        tk.Label(p, text="全部完成！", font=self.f_title, bg=C_BG, fg=C_OK).pack(pady=(0,6))
         tk.Label(p, text="OpenClaw 已安裝並設定完畢。\n您的 🦞 已準備好為您服務！",
-                 font=self.f_sub, bg=C_BG, fg=C_DIM, justify="center").pack(pady=(0,18))
+                 font=self.f_sub, bg=C_BG, fg=C_DIM, justify="center").pack(pady=(0,12))
 
-        box = tk.Frame(p, bg=C_INPUT, padx=20, pady=15)
+        box = tk.Frame(p, bg=C_INPUT, padx=20, pady=12)
         box.pack(padx=40, fill="x")
-        tk.Label(box, text="現在可以：", font=self.f_sub, bg=C_INPUT, fg=C_TEXT).pack(anchor="w", pady=(0,8))
+        tk.Label(box, text="現在可以：", font=self.f_sub, bg=C_INPUT, fg=C_TEXT).pack(anchor="w", pady=(0,6))
         for ic, tx in [
             ("📱", "開啟 Telegram，跟你的 🦞 Bot 說話"),
             ("🌐", "openclaw dashboard — 網頁控制面板"),
-            ("🖥️", "啟動 macOS Menu Bar App 常駐"),
-            ("🧠", "探索 clawhub.ai 安裝更多 Skills"),
             ("📡", "openclaw gateway status — 檢查服務狀態"),
+            ("🧠", "探索 clawhub.ai 安裝更多 Skills"),
+            ("��", "openclaw tui — 終端互動介面"),
         ]:
-            r = tk.Frame(box, bg=C_INPUT); r.pack(anchor="w", pady=3)
+            r = tk.Frame(box, bg=C_INPUT); r.pack(anchor="w", pady=2)
             tk.Label(r, text=ic, font=self.f_body, bg=C_INPUT).pack(side="left")
             tk.Label(r, text=f"  {tx}", font=self.f_body, bg=C_INPUT, fg=C_TEXT).pack(side="left")
 
+        # ─── Daemon install section ───
+        daemon_f = tk.Frame(p, bg=C_INPUT, padx=20, pady=10)
+        daemon_f.pack(padx=40, fill="x", pady=(10,0))
+        drow = tk.Frame(daemon_f, bg=C_INPUT)
+        drow.pack(fill="x")
+        tk.Label(drow, text="🔧 常駐服務（開機自動啟動）", font=self.f_sub, bg=C_INPUT, fg=C_TEXT).pack(side="left")
+        tk.Button(drow, text="安裝 Daemon", font=self.f_small, bg=C_ACCENT, fg="#ffffff",
+                  bd=0, padx=14, pady=5, cursor="hand2",
+                  command=self._install_daemon).pack(side="right", padx=(8,0))
+        tk.Button(drow, text="📡 查看狀態", font=self.f_small, bg=C_BTN, fg=C_BTN_FG,
+                  bd=0, padx=14, pady=5, cursor="hand2",
+                  command=lambda: self._run_done_cmd("openclaw daemon status")).pack(side="right")
+        self.daemon_status_lbl = tk.Label(daemon_f, text="", font=self.f_small, bg=C_INPUT, fg=C_DIM)
+        self.daemon_status_lbl.pack(anchor="w", pady=(4,0))
+
+        # ─── Action buttons ───
         bf = tk.Frame(p, bg=C_BG)
-        bf.pack(pady=18)
+        bf.pack(pady=12)
 
         tk.Button(bf, text="📱 開啟 Telegram Bot", font=self.f_body, bg=C_BTN, fg=C_BTN_FG,
                   bd=0, padx=18, pady=10, cursor="hand2",
                   command=self._open_telegram_bot).pack(side="left", padx=8)
         tk.Button(bf, text="🌐 控制面板", font=self.f_body, bg=C_INPUT, fg=C_TEXT,
                   bd=0, padx=18, pady=10, cursor="hand2",
-                  command=lambda: subprocess.Popen(["openclaw","dashboard"],
+                  command=lambda: subprocess.Popen(
+                      ["openclaw", "dashboard"],
                       env={**os.environ, "PATH": "/usr/local/bin:/opt/homebrew/bin:" + os.environ.get("PATH","")}
                   )).pack(side="left", padx=8)
         tk.Button(bf, text="🦞 ClawHub Skills", font=self.f_body, bg=C_INPUT, fg=C_TEXT,
                   bd=0, padx=18, pady=10, cursor="hand2",
                   command=lambda: webbrowser.open("https://clawhub.ai/")).pack(side="left", padx=8)
 
+        bf2 = tk.Frame(p, bg=C_BG)
+        bf2.pack(pady=(0,8))
+        tk.Button(bf2, text="💻 終端互動 (TUI)", font=self.f_body, bg=C_INPUT, fg=C_TEXT,
+                  bd=0, padx=18, pady=10, cursor="hand2",
+                  command=lambda: subprocess.Popen(
+                      ["osascript", "-e",
+                       'tell application "Terminal" to do script "openclaw tui"'],
+                  )).pack(side="left", padx=8)
+        tk.Button(bf2, text="🦞 Menu Bar App", font=self.f_body, bg=C_INPUT, fg=C_TEXT,
+                  bd=0, padx=18, pady=10, cursor="hand2",
+                  command=self._launch_menubar).pack(side="left", padx=8)
+
         tk.Button(p, text="關閉安裝工具", font=self.f_body, bg=C_BG2, fg=C_DIM,
                   bd=0, padx=20, pady=8, cursor="hand2", command=self.quit).pack(pady=(5,0))
+
+    def _install_daemon(self):
+        self.daemon_status_lbl.config(text="⏳ 正在安裝常駐服務…", fg=C_WARN)
+        def do():
+            try:
+                env = os.environ.copy()
+                env["PATH"] = "/usr/local/bin:/opt/homebrew/bin:" + env.get("PATH", "")
+                r = subprocess.run(
+                    ["openclaw", "daemon", "install"],
+                    capture_output=True, text=True, timeout=30, env=env
+                )
+                if r.returncode == 0:
+                    msg = "✅ 常駐服務已安裝！Gateway 將在開機時自動啟動"
+                    self.after(0, lambda: self.daemon_status_lbl.config(text=msg, fg=C_OK))
+                else:
+                    err = r.stderr.strip() or r.stdout.strip() or "安裝失敗"
+                    self.after(0, lambda: self.daemon_status_lbl.config(text=f"❌ {err[:120]}", fg=C_ERR))
+            except Exception as e:
+                self.after(0, lambda: self.daemon_status_lbl.config(text=f"❌ {e}", fg=C_ERR))
+        threading.Thread(target=do, daemon=True).start()
+
+    def _run_done_cmd(self, cmd_str):
+        """Run a CLI command and show result in a popup."""
+        def do():
+            try:
+                env = os.environ.copy()
+                env["PATH"] = "/usr/local/bin:/opt/homebrew/bin:" + env.get("PATH", "")
+                r = subprocess.run(
+                    cmd_str.split(),
+                    capture_output=True, text=True, timeout=15, env=env
+                )
+                output = (r.stdout + r.stderr).strip() or "(無輸出)"
+                self.after(0, lambda: messagebox.showinfo(cmd_str, output))
+            except Exception as e:
+                self.after(0, lambda: messagebox.showwarning("錯誤", str(e)))
+        threading.Thread(target=do, daemon=True).start()
+
+    def _launch_menubar(self):
+        """Launch the Menu Bar companion app."""
+        # Look for menubar_app.py next to this script
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        menubar_py = os.path.join(script_dir, "menubar_app.py")
+        if os.path.exists(menubar_py):
+            subprocess.Popen(
+                ["/opt/homebrew/bin/python3.13", menubar_py],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+            )
+            messagebox.showinfo("Menu Bar", "🦞 已啟動！請查看螢幕右上角的狀態列。")
+        else:
+            messagebox.showwarning("找不到", f"找不到 menubar_app.py\n路徑：{menubar_py}")
 
     def _open_telegram_bot(self):
         token = self.telegram_token_var.get().strip()
         if token and ":" in token:
-            # Extract bot username is not easily possible from token alone
-            # Just open Telegram
-            webbrowser.open("https://t.me/")
+            # Try to get bot username via Telegram API
+            def do():
+                try:
+                    import urllib.request
+                    url = f"https://api.telegram.org/bot{token}/getMe"
+                    req = urllib.request.Request(url, headers={"User-Agent": "OpenClaw-Installer"})
+                    with urllib.request.urlopen(req, timeout=8) as resp:
+                        data = json.loads(resp.read())
+                        if data.get("ok") and data.get("result", {}).get("username"):
+                            username = data["result"]["username"]
+                            self.after(0, lambda: webbrowser.open(f"https://t.me/{username}"))
+                            return
+                except Exception:
+                    pass
+                self.after(0, lambda: webbrowser.open("https://t.me/"))
+            threading.Thread(target=do, daemon=True).start()
         else:
             webbrowser.open("https://t.me/")
-
 
 if __name__ == "__main__":
     InstallerApp().mainloop()
