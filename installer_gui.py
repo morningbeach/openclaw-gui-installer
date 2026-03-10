@@ -100,15 +100,15 @@ MODEL_FAMILIES = [
 
 # Hardcoded fallback (used when network unavailable)
 MODELS_FALLBACK = [
-    {"id": "anthropic/claude-sonnet-4.6", "name": "Claude Sonnet 4.6", "provider": "Anthropic",
+    {"id": "anthropic/claude-sonnet-4-6", "name": "Claude Sonnet 4.6", "provider": "Anthropic",
      "desc": "最佳平衡（推薦）", "env_key": "ANTHROPIC_API_KEY", "url": "https://console.anthropic.com/settings/keys"},
-    {"id": "anthropic/claude-opus-4.6", "name": "Claude Opus 4.6", "provider": "Anthropic",
+    {"id": "anthropic/claude-opus-4-6", "name": "Claude Opus 4.6", "provider": "Anthropic",
      "desc": "最強推理能力", "env_key": "ANTHROPIC_API_KEY", "url": "https://console.anthropic.com/settings/keys"},
-    {"id": "openai/gpt-5.4", "name": "GPT-5.4", "provider": "OpenAI",
+    {"id": "openai/gpt-5-4", "name": "GPT-5.4", "provider": "OpenAI",
      "desc": "OpenAI 旗艦模型", "env_key": "OPENAI_API_KEY", "url": "https://platform.openai.com/api-keys"},
     {"id": "openai/o3-deep-research", "name": "o3 Deep Research", "provider": "OpenAI",
      "desc": "強推理模型", "env_key": "OPENAI_API_KEY", "url": "https://platform.openai.com/api-keys"},
-    {"id": "google/gemini-3.1-pro-preview", "name": "Gemini 3.1 Pro", "provider": "Google",
+    {"id": "google/gemini-3-1-pro-preview", "name": "Gemini 3.1 Pro", "provider": "Google",
      "desc": "Google 最新模型", "env_key": "GOOGLE_API_KEY", "url": "https://aistudio.google.com/apikey"},
 ]
 
@@ -1075,8 +1075,14 @@ class InstallerApp(tk.Tk):
                 if not meta:
                     continue
 
+                # Convert OpenRouter ID (dots) → OpenClaw ID (dashes)
+                # e.g. anthropic/claude-sonnet-4.6 → anthropic/claude-sonnet-4-6
+                raw_id = best["id"]
+                prefix, slug = raw_id.split("/", 1)
+                slug_dashed = re.sub(r'(?<=[a-z])\.(?=\d)', '-', slug)  # only x.N → x-N
+                claw_id = f"{prefix}/{slug_dashed}"
                 result.append({
-                    "id": best["id"],
+                    "id": claw_id,
                     "name": best.get("name", best["id"].split("/")[-1]),
                     "provider": meta["label"],
                     "desc": fam["desc"],
@@ -1222,6 +1228,7 @@ class InstallerApp(tk.Tk):
         try:
             env = os.environ.copy()
             env["PATH"] = "/usr/local/bin:/opt/homebrew/bin:" + env.get("PATH", "")
+            env["LANG"] = "en_US.UTF-8"
 
             # Load env file if exists
             env_path = os.path.expanduser("~/.openclaw/.env")
@@ -1233,15 +1240,34 @@ class InstallerApp(tk.Tk):
                             k, v = line.split("=", 1)
                             env[k] = v
 
+            # Ensure gateway is running
+            gw_check = subprocess.run(
+                ["openclaw", "gateway", "status"],
+                capture_output=True, text=True, timeout=10, env=env
+            )
+            if gw_check.returncode != 0:
+                self._chat_append("system", "⏳ 正在啟動 Gateway…")
+                subprocess.Popen(
+                    ["openclaw", "gateway", "--port", "18789"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env
+                )
+                import time; time.sleep(3)
+
             # Use openclaw agent command
             result = subprocess.run(
-                ["openclaw", "agent", "--message", msg],
-                capture_output=True, text=True, timeout=60, env=env
+                ["openclaw", "agent", "--agent", "main", "--message", msg],
+                capture_output=True, text=True, timeout=120, env=env
             )
 
             response = result.stdout.strip()
             if not response:
-                response = result.stderr.strip() if result.stderr else "（沒有收到回覆，請確認 Gateway 是否運行中）"
+                err = result.stderr.strip() if result.stderr else ""
+                if "404" in err or "not_found" in err:
+                    response = f"⚠️ 模型不存在或 API Key 無效。\n請確認模型名稱和 API Key 是否正確。\n\n詳細：{err[:200]}"
+                elif err:
+                    response = f"⚠️ {err[:300]}"
+                else:
+                    response = "（沒有收到回覆，請確認 Gateway 是否運行中）"
 
             self._chat_append("bot", response)
             self.chat_history.append({"role": "assistant", "content": response})
